@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Digital Health Interactive Dashboard (AI Risk Score)</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f8f9fa; }
+    h1 { text-align: center; }
+    .controls { display: flex; justify-content: center; gap: 20px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); grid-gap: 20px; }
+    .full { grid-column: span 2; }
+    .card { background: white; padding: 15px; border-radius: 8px;
+            box-shadow: 0 0 8px rgba(0,0,0,0.1); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ddd; padding: 6px; text-align: center; }
+    th { background: #343a40; color: white; }
+    .risk-high { background-color: #f8d7da; }
+    .risk-medium { background-color: #fff3cd; }
+    .risk-low { background-color: #d1e7dd; }
+  </style>
+</head>
+
+<body>
+<h1>Digital Health Strategy Dashboard (AI Risk Scoring)</h1>
+
+<div class="controls">
+  <input type="file" id="fileInput" accept=".json" />
+  <select id="followupFilter">
+    <option value="All">All Follow-ups</option>
+    <option value="Virtual">Virtual</option>
+    <option value="In-Person">In-Person</option>
+  </select>
+  <select id="ageFilter">
+    <option value="All">All Ages</option>
+    <option value="20-29">20–29</option>
+    <option value="30-39">30–39</option>
+    <option value="40+">40+</option>
+  </select>
+</div>
+
+<div class="grid">
+  <div class="card" id="kpi"></div>
+  <div class="card" id="trend"></div>
+  <div class="card" id="followup"></div>
+  <div class="card" id="outcome"></div>
+  <div class="card full" id="table"></div>
+</div>
+
+<script>
+let rawData = [];
+
+document.getElementById("fileInput").addEventListener("change", handleUpload);
+document.getElementById("followupFilter").addEventListener("change", applyFilters);
+document.getElementById("ageFilter").addEventListener("change", applyFilters);
+
+function handleUpload(event) {
+  const file = event.target.files[0];
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    rawData = JSON.parse(e.target.result);
+    applyFilters();
+  };
+  reader.readAsText(file);
+}
+
+function applyFilters() {
+  let filtered = [...rawData];
+  const followup = document.getElementById("followupFilter").value;
+  const age = document.getElementById("ageFilter").value;
+
+  if (followup !== "All") {
+    filtered = filtered.filter(d => d.Followup_Type === followup);
+  }
+  if (age !== "All") {
+    filtered = filtered.filter(d => {
+      if (age === "20-29") return d.Age >= 20 && d.Age <= 29;
+      if (age === "30-39") return d.Age >= 30 && d.Age <= 39;
+      if (age === "40+") return d.Age >= 40;
+    });
+  }
+  buildDashboard(filtered);
+}
+
+function calculateRisk(d) {
+  let score = 0;
+  if (d.Pain_Day7 >= 6) score += 40;
+  if ((d.Pain_Day1 - d.Pain_Day7) < 3) score += 30;
+  if (d.Medication_Adherence !== "Yes") score += 20;
+  if (d.Followup_Type === "Virtual") score += 10;
+  return score;
+}
+
+function riskLabel(score) {
+  if (score >= 60) return "High";
+  if (score >= 30) return "Medium";
+  return "Low";
+}
+
+function buildDashboard(data) {
+  if (data.length === 0) {
+    document.getElementById("kpi").innerHTML = "<b>No data for selected filters</b>";
+    return;
+  }
+
+  const painReduction = data.map(d => d.Pain_Day1 - d.Pain_Day7);
+  const avgPainReduction = (painReduction.reduce((a,b)=>a+b,0)/painReduction.length).toFixed(2);
+
+  Plotly.newPlot("kpi", [{
+    type: "indicator",
+    mode: "number",
+    value: avgPainReduction,
+    title: { text: "Average Pain Reduction" }
+  }]);
+
+  const avg = key => data.reduce((a,b)=>a+b[key],0)/data.length;
+
+  Plotly.newPlot("trend", [{
+    x: ["Day 1","Day 3","Day 5","Day 7"],
+    y: [avg("Pain_Day1"), avg("Pain_Day3"), avg("Pain_Day5"), avg("Pain_Day7")],
+    mode: "lines+markers"
+  }], { title: "Pain Trend Over Time" });
+
+  const followups = {};
+  data.forEach(d => followups[d.Followup_Type] = (followups[d.Followup_Type] || 0) + 1);
+
+  Plotly.newPlot("followup", [{
+    x: Object.keys(followups), y: Object.values(followups), type: "bar"
+  }], { title: "Follow-up Type Distribution" });
+
+  const outcomes = {};
+  data.forEach(d => {
+    const key = d.Followup_Type + " - " + d.Outcome;
+    outcomes[key] = (outcomes[key] || 0) + 1;
+  });
+
+  Plotly.newPlot("outcome", [{
+    x: Object.keys(outcomes), y: Object.values(outcomes), type: "bar"
+  }], { title: "Outcome by Follow-up Type" });
+
+  let tableHTML = `<h3>AI-Style Risk Scoring (Actionable)</h3>
+    <table><tr>
+      <th>Patient ID</th><th>Age</th><th>Pain Day 7</th>
+      <th>Adherence</th><th>Follow-up</th><th>Risk Score</th><th>Risk Level</th></tr>`;
+
+  data.forEach(d => {
+    const score = calculateRisk(d);
+    const label = riskLabel(score);
+    const rowClass = label === "High" ? "risk-high" : label === "Medium" ? "risk-medium" : "risk-low";
+
+    tableHTML += `<tr class="${rowClass}">
+      <td>${d.Patient_ID}</td>
+      <td>${d.Age}</td>
+      <td>${d.Pain_Day7}</td>
+      <td>${d.Medication_Adherence}</td>
+      <td>${d.Followup_Type}</td>
+      <td>${score}</td>
+      <td>${label}</td>
+    </tr>`;
+  });
+
+  tableHTML += "</table>";
+  document.getElementById("table").innerHTML = tableHTML;
+}
+</script>
+</body>
+</html>
